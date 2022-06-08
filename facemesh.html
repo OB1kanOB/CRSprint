@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+
+<body>
+  <div class="container">
+    <video class="input_video" style="display:none"></video>
+    <canvas class="output_canvas" width="1280px" height="720px" style="display:none"></canvas>
+  </div>
+</body>
+
+<script id="vertShader" type="shader">
+    //uniform mat4 modelViewMatrix;
+    //uniform mat4 projectionMatrix;
+    
+    precision highp float;
+    
+    //in vec3 position;
+    
+    void main() {
+        gl_Position = projectionMatrix *
+                      modelViewMatrix * vec4(position, 1.0 );
+    }
+</script>
+    
+<script id="fragShader" type="shader">
+    precision highp float;
+    
+    uniform sampler2D image;
+    uniform int sizeDiv2;
+    uniform float colorScaleR;
+    uniform float colorScaleG;
+    uniform float colorScaleB;
+    uniform bool invert;
+    //uniform float irisL[16];
+    //uniform float irisR[16];
+    //uniform float irisRE[64];
+    //uniform float irisLE[64];
+    uniform bool imgnull;
+    uniform sampler2D shrngn;
+    uniform sampler2D rngn;
+    uniform sampler2D ssk;
+    uniform sampler2D tattoo;
+    uniform sampler2D skull;
+
+    uniform sampler2D faceTess;
+    uniform sampler2D irisLE;
+    uniform sampler2D irisL;
+    uniform sampler2D irisR;
+    uniform sampler2D irisRE;
+
+    //float iris[16] = {0.2,0.4,0.3,0.5,0,0,0,0,0,0,0,0,0,0,0,0};
+
+    out vec4 out_FragColor;
+
+    float getValFromTex(sampler2D tex, int idx)
+    {
+        return texelFetch( tex, ivec2(idx,0), 0 ).r;
+    }
+
+    float minX(bool left)
+    {
+        float minVal = 1.;
+        for(int i=0; i<16; i+=2)
+        {
+            if(left)
+                minVal = min(minVal, getValFromTex(irisL,i));
+            else
+                minVal = min(minVal, getValFromTex(irisR,i));
+        }
+        return minVal;
+    }
+    float minY(bool left)
+    {
+        float minVal = 1.;
+        for(int i=1; i<16; i+=2)
+        {
+            if(left)
+                minVal = min(minVal, getValFromTex(irisL,i));
+            else
+                minVal = min(minVal, getValFromTex(irisR,i));
+        }
+        return minVal;
+    }
+    float maxX(bool left)
+    {
+        float minVal = 0.;
+        for(int i=0; i<16; i+=2)
+        {
+            if(left)
+                minVal = max(minVal, getValFromTex(irisL,i));
+            else
+                minVal = max(minVal, getValFromTex(irisR,i));
+        }
+        return minVal;
+    }
+    float maxY(bool left)
+    {
+        float minVal = 0.;
+        for(int i=1; i<16; i+=2)
+        {
+            if(left)
+                minVal = max(minVal, getValFromTex(irisL,i));
+            else
+                minVal = max(minVal, getValFromTex(irisR,i));
+        }
+        return minVal;
+    }
+
+    float nrmlX(float x,bool left)
+    {
+        float minVal = minX(left);
+        float maxVal = maxX(left);
+
+        return (x-minVal)/(maxVal-minVal);
+    }
+    float nrmlY(float y,bool left)
+    {
+        float minVal = minY(left);
+        float maxVal = maxY(left);
+
+        return (y-minVal)/(maxVal-minVal);
+    }
+
+    float normX(sampler2D tex, float x)
+    {
+        float minVal = 1.;
+        for(int i =0; i< textureSize(tex,0).x; i+=2)
+        {
+            minVal = min(minVal, getValFromTex(tex,i));
+        }
+
+        float maxVal = 0.;
+        for(int i =0; i< textureSize(tex,0).x; i+=2)
+        {
+            maxVal = max(minVal, getValFromTex(tex,i));
+        }
+
+        return (x-minVal)/(maxVal-minVal);
+
+    }
+
+    float normY(sampler2D tex, float y)
+    {
+        float minVal = 1.;
+        for(int i =1; i< textureSize(tex,0).x; i+=2)
+        {
+            minVal = min(minVal, getValFromTex(tex,i));
+        }
+
+        float maxVal = 0.;
+        for(int i =1; i< textureSize(tex,0).x; i+=2)
+        {
+            maxVal = max(minVal, getValFromTex(tex,i));
+        }
+
+        return (y-minVal)/(maxVal-minVal);
+
+    }
+
+    
+    bool inShape(sampler2D tex, vec2 point, int size)
+    {
+        /*
+        float minY = 1.;
+        for(int i = 1; i<2556*4; i+=2)
+            minY = min(minY, getValFromTex(faceTess,i));
+
+        float minX = 1.;
+        for(int i = 0; i<2556*4; i+=2)
+            minX = min(minX, getValFromTex(faceTess,i));
+
+        float maxX = 0.;
+        for(int i = 0; i<2556*4; i+=2)
+            maxX = max(maxX, getValFromTex(faceTess,i));
+
+
+        float centerx = (maxX+minX)/2.;
+        return vec2(centerx, minY);
+        */
+        float testx = point.x;
+        float testy = point.y;
+        int i, j, c = 0;
+            for (i = 0, j = size-1; i < size; j = i++) {
+                if ( ((getValFromTex(tex,i*2+1)>testy) != (getValFromTex(tex,j*2+1)>testy)) &&
+                (testx < (getValFromTex(tex,j*2)-getValFromTex(tex,i*2)) * (testy-getValFromTex(tex,i*2+1)) / (getValFromTex(tex,j*2+1)-getValFromTex(tex,i*2+1)) + getValFromTex(tex,i*2)) )
+                c = 1-c;
+            }
+        return bool(c);
+    }
+
+
+    bool insidePoly(float testx, float testy,bool left)
+    {
+        if(!left)
+        {
+            return inShape(irisRE,vec2(testx, testy),32);
+        }
+        else{
+            return inShape(irisLE,vec2(testx, testy),32);
+        }
+        
+    }
+
+    bool pnpoly(float testx, float testy,bool left)
+    {
+        float minx = minX(left);
+        float maxx = maxX(left);
+        float radius = (maxx-minx)/2.;
+        float miny = minY(left);
+        float maxy = maxY(left);
+
+        float centerx = (minx+maxx)/2.;
+        float centery = (miny+maxy)/2.;
+
+        float facx = pow((testx-centerx),2.);
+        float facy = pow((testy-centery),2.);
+
+        if((facx+facy/2.) < pow(radius,2.))
+            return true;
+        return false;
+
+    }
+
+    //bool extended 
+
+
+    void main(void) {
+    
+                    vec4 textureValue = vec4 ( 0,0,0,0 );
+                    int count = 0;
+                    for (int i=-sizeDiv2;i<=sizeDiv2;i++)
+                        for (int j=-sizeDiv2;j<=sizeDiv2;j++)
+                        {
+                            if((i*i + j*j) > sizeDiv2*sizeDiv2) continue;
+                            textureValue += texelFetch( image, ivec2(i+int(gl_FragCoord.x), j+int(gl_FragCoord.y)), 0 );
+                            count++;
+                        }
+                    textureValue /= float(count);//3.14 * float(sizeDiv2*sizeDiv2)); //((sizeDiv2*2+1)*(sizeDiv2*2+1));
+                    out_FragColor = vec4(vec3(colorScaleR,colorScaleG,colorScaleB),1.0)*textureValue;
+                    if (invert)
+                    {
+                        out_FragColor = vec4(1,1,1,0) - out_FragColor; 
+                        out_FragColor.a = 1.0;
+                    }
+                    //if((float(gl_FragCoord.x/1280.) > iris[0] && float(gl_FragCoord.x/1280.) < iris[2] )&& (float(gl_FragCoord.y/720.) > iris[1] && float(gl_FragCoord.y/720.) < iris[3]))
+                    //if(irisX(gl_FragCoord.x/1280.) && irisY(gl_FragCoord.y/720.))
+
+                    //LEFT EYE
+                    if(insidePoly(gl_FragCoord.x/1280.,gl_FragCoord.y/720.,true))
+                    {
+                        if(pnpoly(gl_FragCoord.x/1280.,gl_FragCoord.y/720.,true))
+                        {
+                            vec4 temp = texelFetch( shrngn, ivec2(nrmlX(gl_FragCoord.x/1280.,true)*1000., nrmlY(gl_FragCoord.y/720.,true)*1000.), 0 );
+                            //float pct = abs(sin(u_time));
+                            vec3 col = mix(temp.rgb, texelFetch( image, ivec2(int(gl_FragCoord.x), int(gl_FragCoord.y)), 0 ).rgb, 0.1);
+                            out_FragColor = vec4(col,1.);
+                            //out_FragColor = texelFetch( shrngn, ivec2(int(gl_FragCoord.x*1.5), int(gl_FragCoord.y*1.5)), 0 ); 
+                        }
+                        else
+                        {
+                            vec3 col = mix(vec3(0,0,0), texelFetch( image, ivec2(int(gl_FragCoord.x), int(gl_FragCoord.y)), 0 ).rgb, 0.1);
+                            out_FragColor = vec4(col,1.);
+                        }
+                    }
+                    else if( insidePoly(gl_FragCoord.x/1280.,gl_FragCoord.y/720.,false))
+                    {
+                        if(pnpoly(gl_FragCoord.x/1280.,gl_FragCoord.y/720.,false))
+                        {
+                            vec4 temp = texelFetch( shrngn, ivec2(nrmlX(gl_FragCoord.x/1280.,false)*1000., nrmlY(gl_FragCoord.y/720.,false)*1000.), 0 );
+                            //float pct = abs(sin(u_time));
+                            vec3 col = mix(temp.rgb, texelFetch( image, ivec2(int(gl_FragCoord.x), int(gl_FragCoord.y)), 0 ).rgb, 0.1);
+                            out_FragColor = vec4(col,1.);
+                            //out_FragColor = texelFetch( shrngn, ivec2(int(gl_FragCoord.x*1.5), int(gl_FragCoord.y*1.5)), 0 ); 
+                            //out_FragColor = vec4(0.,1.,0.,1.);  
+                        }
+                        else
+                        {
+                            vec3 col = mix(vec3(0,0,0), texelFetch( image, ivec2(int(gl_FragCoord.x), int(gl_FragCoord.y)), 0 ).rgb, 0.1);
+                            out_FragColor = vec4(col,1.);
+                        }
+                    }
+                    else if(inShape(faceTess, vec2(gl_FragCoord.x/1280.,gl_FragCoord.y/720.), 36*2))
+                    {
+                        //out_FragColor = vec4(mix(vec3(1.,1.,1.), texelFetch( image, ivec2(int(gl_FragCoord.x), int(gl_FragCoord.y)), 0 ).rgb, 0.9),1.);
+                        //out_FragColor = vec4(mix(texelFetch(tattoo,ivec2(normX(faceTess,gl_FragCoord.x/1280.)*float(textureSize(tattoo,0).x), normY(faceTess,gl_FragCoord.y/720.)*float(textureSize(tattoo,0).y)), 0 ).rgb,
+                        //                    texelFetch( image, ivec2(int(gl_FragCoord.x), int(gl_FragCoord.y)), 0 ).rgb,0.9),1.) ;
+                        out_FragColor = texelFetch(tattoo,ivec2(normX(faceTess,gl_FragCoord.x/1280.)*float(textureSize(tattoo,0).x)*1.5, normY(faceTess,gl_FragCoord.y/720.)*float(textureSize(tattoo,0).y)*.9), 0 );
+                        //out_FragColor = texelFetch(skull,ivec2(normX(faceTess,gl_FragCoord.x/1280.)*float(textureSize(skull,0).x), normY(faceTess,gl_FragCoord.y/720.)*float(textureSize(skull,0).y)), 0 );
+                        if(out_FragColor.a == 0.0)
+                            out_FragColor = texelFetch( image, ivec2(int(gl_FragCoord.x), int(gl_FragCoord.y)), 0 );    
+                        //out_FragColor = vec4(0.,1.,0.,1.);  
+                    }
+                    else
+                    {
+                        //out_FragColor = texelFetch(ssk,ivec2((gl_FragCoord.x/1280.)*float(textureSize(ssk,0).x), (gl_FragCoord.y/720.)*float(textureSize(ssk,0).y)), 0 );
+                        //if(out_FragColor.a == 0.0)
+                            out_FragColor = texelFetch( image, ivec2(int(gl_FragCoord.x), int(gl_FragCoord.y)), 0 );
+                    }
+
+                    //hair
+                    //if()
+                    //{
+
+                    //}
+
+
+                    if(imgnull)
+                        out_FragColor = vec4(0.,1.,0.,1.);  
+
+                    //if(texelFetch( irisLE, ivec2(0,0), 0 ).r == 0.)
+                    //    out_FragColor = vec4(1.0,1.0,0.0,1.);
+
+                    //if(textureSize(irisLE,0).x == 16)
+                    //    out_FragColor = vec4(1.0,0.0,1.0,1.);
+                    
+            }
+</script>
+
+<script type="module">
+
+import * as THREE from 'https://cdn.skypack.dev/three@0.136.0/build/three.module.js';
+import { OrbitControls } from 'https://cdn.skypack.dev/three@0.136.0/examples/jsm/controls/OrbitControls.js';
+import { GUI } from 'https://cdn.skypack.dev/three@0.136.0/examples/jsm/libs/lil-gui.module.min.js';
+import { WEBGL } from 'https://cdn.skypack.dev/three@0.136.0/examples/jsm/WebGL.js';
+
+var camera, controls, scene, renderer, container;
+var context, canvas;
+var plan;
+var imageProcessing, imageProcessingMaterial;
+
+function IVimageProcessing ( height, width, imageProcessingMaterial )
+{
+		this.height = height;
+		this.width = width;
+		
+        //3 rtt setup
+        this.scene = new THREE.Scene();
+        this.orthoCamera = new THREE.OrthographicCamera(-1,1,1,-1,1/Math.pow( 2, 53 ),1 );
+
+        //4 create a target texture
+        var options = {
+            minFilter: THREE.NearestFilter,
+            magFilter: THREE.NearestFilter,
+            format: THREE.RGBAFormat,
+            type:THREE.FloatType,
+//            type:THREE.UnsignedByteType,
+            canvas: canvas, 
+            context: context
+        };
+        this.rtt = new THREE.WebGLRenderTarget( width, height, options);
+
+        var geom = new THREE.BufferGeometry();
+        geom.addAttribute( 'position', new THREE.BufferAttribute( new Float32Array([-1,-1,0, 1,-1,0, 1,1,0, -1,-1, 0, 1, 1, 0, -1,1,0 ]), 3 ) );
+        this.scene.add( new THREE.Mesh( geom, imageProcessingMaterial ) );
+}
+
+function IVprocess ( imageProcessing, renderer )
+{
+	renderer.setRenderTarget( imageProcessing.rtt );
+	renderer.render ( imageProcessing.scene, imageProcessing.orthoCamera ); 	
+	renderer.setRenderTarget( null );
+};
+
+    const videoElement = document.getElementsByClassName('input_video')[0];
+    const canvasElement = document.getElementsByClassName('output_canvas')[0];
+    const canvasCtx = canvasElement.getContext('2d');
+    
+    var pointsR = new Float32Array(length=16);
+    var pointsL = new Float32Array(length=16);
+    var pointsRE = new Float32Array(length=64);
+    var pointsLE = new Float32Array(length=64);
+    var pointsFT = new Float32Array(length=36*4);
+
+    function onResults(results) {
+      canvasCtx.save();
+      canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+      canvasCtx.drawImage(
+          results.image, 0, 0, canvasElement.width, canvasElement.height);
+      
+      //console.log(results.multiFaceLandmarks)
+      if (results.multiFaceLandmarks) {
+        for (const landmarks of results.multiFaceLandmarks) {
+          //drawConnectors(canvasCtx, landmarks, FACEMESH_TESSELATION,
+          //               {color: '#C0C0C070', lineWidth: 1});
+          /*for(var i=0; i<FACEMESH_TESSELATION.length; i++)
+          {
+            pointsFT[i*4] = (landmarks[FACEMESH_TESSELATION[i][0]].x)
+            pointsFT[i*4+1] = (1-landmarks[FACEMESH_TESSELATION[i][0]].y)
+            pointsFT[i*4+2] = (landmarks[FACEMESH_TESSELATION[i][1]].x)
+            pointsFT[i*4+3] = (1-landmarks[FACEMESH_TESSELATION[i][1]].y)
+          }*/
+          //drawConnectors(canvasCtx, landmarks, FACEMESH_RIGHT_EYE, {color: '#FF3030'});
+          for(var i=0; i<FACEMESH_RIGHT_EYE.length; i++)
+          {
+            pointsRE[i*4] = (landmarks[FACEMESH_RIGHT_EYE[i][0]].x)
+            pointsRE[i*4+1] = (1-landmarks[FACEMESH_RIGHT_EYE[i][0]].y)
+            pointsRE[i*4+2] = (landmarks[FACEMESH_RIGHT_EYE[i][1]].x)
+            pointsRE[i*4+3] = (1-landmarks[FACEMESH_RIGHT_EYE[i][1]].y)
+          }
+          //drawConnectors(canvasCtx, landmarks, FACEMESH_RIGHT_EYEBROW, {color: '#FF3030'});
+          //drawConnectors(canvasCtx, landmarks, FACEMESH_RIGHT_IRIS, {color: '#FF3030'});
+
+          for(var i=0; i<FACEMESH_RIGHT_IRIS.length; i++)
+          {
+            pointsR[i*4] = (landmarks[FACEMESH_RIGHT_IRIS[i][0]].x)
+            pointsR[i*4+1] = (1-landmarks[FACEMESH_RIGHT_IRIS[i][0]].y)
+            pointsR[i*4+2] = (landmarks[FACEMESH_RIGHT_IRIS[i][1]].x)
+            pointsR[i*4+3] = (1-landmarks[FACEMESH_RIGHT_IRIS[i][1]].y)
+          }
+
+          //drawConnectors(canvasCtx, landmarks, FACEMESH_LEFT_EYE, {color: '#30FF30'});
+          for(var i=0; i<FACEMESH_LEFT_EYE.length; i++)
+          {
+            pointsLE[i*4] = (landmarks[FACEMESH_LEFT_EYE[i][0]].x)
+            pointsLE[i*4+1] = (1-landmarks[FACEMESH_LEFT_EYE[i][0]].y)
+            pointsLE[i*4+2] = (landmarks[FACEMESH_LEFT_EYE[i][1]].x)
+            pointsLE[i*4+3] = (1-landmarks[FACEMESH_LEFT_EYE[i][1]].y)
+          }
+          //drawConnectors(canvasCtx, landmarks, FACEMESH_LEFT_EYEBROW, {color: '#30FF30'});
+          //drawConnectors(canvasCtx, landmarks, FACEMESH_LEFT_IRIS, {color: '#30FF30'});
+          for(var i=0; i<FACEMESH_LEFT_IRIS.length; i++)
+          {
+            pointsL[i*4] = (landmarks[FACEMESH_LEFT_IRIS[i][0]].x)
+            pointsL[i*4+1] = (1-landmarks[FACEMESH_LEFT_IRIS[i][0]].y)
+            pointsL[i*4+2] = (landmarks[FACEMESH_LEFT_IRIS[i][1]].x)
+            pointsL[i*4+3] = (1-landmarks[FACEMESH_LEFT_IRIS[i][1]].y)
+          }
+          //drawConnectors(canvasCtx, landmarks, FACEMESH_FACE_OVAL, {color: '#E0E0E0'});
+          for(var i=0; i<FACEMESH_FACE_OVAL.length; i++)
+          {
+            pointsFT[i*4] = (landmarks[FACEMESH_FACE_OVAL[i][0]].x)
+            pointsFT[i*4+1] = (1-landmarks[FACEMESH_FACE_OVAL[i][0]].y)
+            pointsFT[i*4+2] = (landmarks[FACEMESH_FACE_OVAL[i][1]].x)
+            pointsFT[i*4+3] = (1-landmarks[FACEMESH_FACE_OVAL[i][1]].y)
+          }
+          //drawConnectors(canvasCtx, landmarks, FACEMESH_LIPS, {color: '#E0E0E0'});
+        }
+      }
+      canvasCtx.restore();
+      var irispoints = [];
+
+//var arr = new Float32Array(points)
+
+var irisRtex = new THREE.DataTexture(pointsR, 16,1,THREE.RedFormat,THREE.FloatType);
+imageProcessingMaterial.uniforms.irisR.value = irisRtex;
+var irisLtex = new THREE.DataTexture(pointsL, 16,1,THREE.RedFormat,THREE.FloatType);
+imageProcessingMaterial.uniforms.irisL.value = irisLtex;
+var irisREtex = new THREE.DataTexture(pointsRE, 64,1,THREE.RedFormat,THREE.FloatType);
+imageProcessingMaterial.uniforms.irisRE.value = irisREtex;
+var irisLEtex = new THREE.DataTexture(pointsLE, 64,1,THREE.RedFormat,THREE.FloatType);
+imageProcessingMaterial.uniforms.irisLE.value = irisLEtex;//pointsLE;
+var facetessTex = new THREE.DataTexture(pointsFT,36*4,1,THREE.RedFormat,THREE.FloatType);
+imageProcessingMaterial.uniforms.faceTess.value = facetessTex;
+imageProcessingMaterial.uniforms.image.value = new THREE.CanvasTexture(canvasCtx.canvas);
+imageProcessingMaterial.uniforms.imgnull.value = false;
+imageProcessingMaterial.needsUpdate = true;
+
+irisRtex.needsUpdate = true;
+irisLtex.needsUpdate = true;
+irisREtex.needsUpdate = true;
+irisLEtex.needsUpdate = true;
+facetessTex.needsUpdate = true;
+
+
+//plan.material = imageProcessing.rtt.texture;
+plan.material.needsUpdate = true;
+    }
+
+    function onResultsHands(results) {
+        canvasCtx.save();
+        canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+        canvasCtx.drawImage(
+            results.image, 0, 0, canvasElement.width, canvasElement.height);
+        
+        if (results.multiHandLandmarks) {
+            for (const landmarks of results.multiHandLandmarks) {
+            drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS,
+                            {color: '#00FF00', lineWidth: 5});
+            drawLandmarks(canvasCtx, landmarks, {color: '#FF0000', lineWidth: 2});
+            }
+        }
+        canvasCtx.restore();
+        /*
+        var landmarks = results.multiHandLandmarks[0];
+        //Check distance between 8,12,16,20
+        var d1 = Math.sqrt( Math.pow(landmarks[8].x - landmarks[12].x,2) + Math.pow(landmarks[8].y - landmarks[12].y,2))
+        var d2 = Math.sqrt( Math.pow(landmarks[16].x - landmarks[12].x,2) + Math.pow(landmarks[16].y - landmarks[12].y,2))
+        var d3 = Math.sqrt( Math.pow(landmarks[16].x - landmarks[20].x,2) + Math.pow(landmarks[16].y - landmarks[20].y,2))
+        console.log(d1);
+        console.log(d2);
+        console.log(d3);
+
+        if(d1 < 0.5 && d2<0.5 && d3<0.5)
+        {
+
+        }
+        */
+    }
+    
+    const faceMesh = new FaceMesh({locateFile: (file) => {
+      return `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`;
+    }});
+    faceMesh.setOptions({
+      maxNumFaces: 1,
+      refineLandmarks: true,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+    faceMesh.onResults(onResults);
+
+    const hands = new Hands({locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+    }});
+    hands.setOptions({
+        maxNumHands: 2,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+    });
+    hands.onResults(onResultsHands);
+    
+    const cameraweb = new Camera(videoElement, {
+      onFrame: async () => {
+        await faceMesh.send({image: videoElement});
+        await hands.send({image: videoElement});
+      },
+      width: 1280,
+      height: 720
+    });
+    cameraweb.start();
+
+    if ( WEBGL.isWebGL2Available() === false ) {
+		document.body.appendChild( WEBGL.getWebGL2ErrorMessage() );
+	}	
+    container = document.createElement( 'div' );
+	document.body.appendChild( container );
+	
+    canvas = document.createElement( 'canvas' );
+	context = canvas.getContext( 'webgl2' );
+	document.body.appendChild( canvas );
+
+	scene = new THREE.Scene(); 
+
+	renderer = new THREE.WebGLRenderer( {  canvas: canvas, context: context});//, antialias: true, alpha: true } );
+	renderer.autoClear = false;
+	renderer.setPixelRatio( window.devicePixelRatio );
+	renderer.setSize( window.innerWidth, window.innerHeight );
+	renderer.shadowMap.enabled = false;
+
+	container.appendChild( renderer.domElement );
+
+	camera = new THREE.PerspectiveCamera( 75, window.innerWidth / window.innerHeight, 0.001, 10 );
+	camera.position.z = 1;
+	controls = new OrbitControls( camera, renderer.domElement );
+	controls.minDistance = 0.005;
+	controls.maxDistance = 10.0;
+	controls.enableRotate = true;
+	controls.addEventListener( 'change', render );
+	controls.update();
+
+    //var shrngn = new THREE.ImageLoader().load("shrngn.png", function(img){
+
+    var geometry = new THREE.PlaneGeometry( 1, 720/1280 );
+    //var dtex = new THREE.DataTexture(new Float32Array(length=64), 64,1,THREE.RedFormat,THREE.FloatType);
+    //imageProcessingMaterial = new THREE.RawShaderMaterial({
+    imageProcessingMaterial = new THREE.ShaderMaterial({
+    	uniforms: {
+    	    sizeDiv2: {type: 'i', value: 5},
+    	    colorScaleR: {type: 'f', value: 1.0},
+    	    colorScaleG: {type: 'f', value: 1.0},
+    	    colorScaleB: {type: 'f', value: 1.0},
+    	    invert: {type: 'b', value: false},
+        	image: {type: 't', value: null},
+            imgnull:{type: 'b', value: true},
+            irisR:{value: null},
+            irisL:{value: null},
+            irisRE:{value: null},
+            irisLE:{value: null},//new Float32Array(length=64)},
+            faceTess:{value: null},
+            switchEye:{type:'b', value:false},
+            shrngn:{type:'t', value:THREE.ImageUtils.loadTexture("mgshrngn.png")},
+            rngn:{type:'t', value:THREE.ImageUtils.loadTexture("rngn.png")},
+            ssk:{type:'t', value:THREE.ImageUtils.loadTexture("ssk.png")},  //907 x 1266
+            tattoo:{type:'t', value:THREE.ImageUtils.loadTexture("tattoo.png")},
+            skull:{type:'t', value:THREE.ImageUtils.loadTexture("skull.png")},
+    	},
+    	vertexShader: document.
+                  getElementById('vertShader').text,
+    	fragmentShader: document.
+                    getElementById('fragShader').text,
+        glslVersion: THREE.GLSL3
+	});
+    //dtex.needsUpdate = true;
+    imageProcessing = new IVimageProcessing ( 720, 1280, imageProcessingMaterial );
+	
+    //var material = new THREE.MeshBasicMaterial( {side : THREE.DoubleSide } );
+    var material = new THREE.MeshBasicMaterial( { map: imageProcessing.rtt.texture, side : THREE.DoubleSide } );
+    plan = new THREE.Mesh( geometry, material );
+    plan.receiveShadow = false;
+    plan.castShadow = false;
+    scene.add( plan );
+//});
+
+
+    function render () {
+renderer.clear();
+
+if (typeof imageProcessing !== 'undefined') 
+    IVprocess ( imageProcessing, renderer );
+renderer.render( scene, camera );
+
+}
+
+function animate() {	
+requestAnimationFrame(animate);
+controls.update();
+render();
+}
+
+function onWindowResize () {
+camera.aspect = ( window.innerWidth / window.innerHeight);
+camera.updateProjectionMatrix();
+renderer.setSize( window.innerWidth, window.innerHeight );
+render();
+}
+
+animate();
+
+    </script>
+
+</html>
